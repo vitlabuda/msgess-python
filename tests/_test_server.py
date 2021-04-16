@@ -28,26 +28,6 @@ sys.path.insert(0, "../")
 from msgess import MsgESS
 
 
-class MsgESSCallbacker:
-    def __init__(self, addr: str, port: int):
-        self._addr: str = addr
-        self._port: int = port
-
-    def msgess_callback(self, msgess_: MsgESS, json_data: MsgESS.JSONType) -> MsgESS.CallbackReturnType:
-        stringified_data = str(json_data)
-
-        print("Message received:", stringified_data)
-        msgess_.send_json_msg({
-            "message_from": [self._addr, self._port],
-            "stringified_data": stringified_data
-        })
-
-        if json_data["close_connection"]:
-            return MsgESS.CallbackReturnType.EXIT_CALLBACK_LOOP
-
-        return MsgESS.CallbackReturnType.WAIT_FOR_ANOTHER_MESSAGE
-
-
 def main():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
         server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -56,14 +36,27 @@ def main():
 
         while True:
             print("Waiting for a client to connect...")
-
             client_socket, client_addr = server_socket.accept()
-
             print("Client connected:", client_addr)
 
+            client_socket.settimeout(5)
+
             msgess_ = MsgESS(client_socket)
-            msgess_.receive_json_msgs_to_cb(MsgESSCallbacker(*client_addr).msgess_callback)
-            msgess_.close_connection()
+
+            while True:
+                received_object, message_class = msgess_.receive_json_object()
+                stringified_object = str(received_object)
+
+                print("Message received (class {}):".format(message_class), stringified_object)
+                msgess_.send_json_object({
+                    "message_from": [client_addr[0], client_addr[1]],
+                    "stringified_object": stringified_object
+                }, 123)
+
+                if received_object["close_connection"]:
+                    break
+
+            msgess_.get_socket().close()
 
             print()
 

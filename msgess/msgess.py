@@ -22,8 +22,7 @@
 
 
 from __future__ import annotations
-from typing import Any, Optional, Union, List, Dict, Callable
-from enum import Enum
+from typing import Optional, Tuple
 import socket
 import json
 import zlib
@@ -32,32 +31,30 @@ import zlib
 class MsgESS:
     """
     The MsgESS (Message Exchange over Stream Sockets) [messages] is a library and network protocol which allows
-    applications to send and receive different types of data (raw binary data, UTF-8 strings, JSON, ...) reliably over
-    any stream socket (a socket with the SOCK_STREAM type, e.g. TCP or Unix sockets) in the form of messages.
+    applications to send and receive different types of data (raw binary data, UTF-8 strings, JSON, ...) in the form
+    of messages reliably over any stream socket (a socket with the SOCK_STREAM type, e.g. TCP or Unix sockets). Each
+    message can be assigned a message class that allows the app using the library to multiplex message channels.
 
     Tested and works in Python 3.7.
     """
 
     class MsgESSException(Exception):
-        """The only exception thrown by MsgESS's methods."""
+        """The only exception raised by MsgESS' methods."""
 
         def __init__(self, message: str, original_exception: Optional[Exception] = None):
             super().__init__(message)
             self.original_exception: Optional[Exception] = original_exception
 
-    class CallbackReturnType(Enum):
-        """
-        A constant from this enum class must be returned by any callback function passed to the 'receive-with-callback'
-        methods of MsgESS.
-        """
+    class _MessageDataType:
+        """Contains the integer constants used to denote the data type in messages."""
 
-        WAIT_FOR_ANOTHER_MESSAGE = 1
-        EXIT_CALLBACK_LOOP = 2
+        BINARY: int = 1
+        STRING: int = 2
+        JSON_ARRAY: int = 3
+        JSON_OBJECT: int = 4
 
-    JSONType = Union[str, int, float, bool, None, Dict[str, Any], List[Any]]
-
-    LIBRARY_VERSION: int = 1
-    PROTOCOL_VERSION: int = 1
+    LIBRARY_VERSION: int = 2
+    PROTOCOL_VERSION: int = 2
 
     def __init__(self, socket_: socket.SocketType):
         """Initializes a new MsgESS instance.
@@ -71,6 +68,14 @@ class MsgESS:
         self._compress_messages: bool = True
         self._compression_level: int = -1
 
+    def get_socket(self) -> socket.SocketType:
+        """Gets the socket passed to __init__, which is used by the instance to send and receive messages.
+
+        :return: The socket passed to __init__.
+        """
+
+        return self._socket
+
     def set_message_compression(self, compress_messages: bool, compression_level: Optional[int] = None) -> None:
         """Turns the message compression on or off. Optionally, it sets the compression level.
 
@@ -82,23 +87,17 @@ class MsgESS:
         if compression_level is not None:
             self._compression_level = compression_level
 
-    def close_connection(self) -> None:
-        """Closes the socket passed to __init__.
-
-        :raises: MsgESS.MsgESSException: If the OS fails to close the socket.
-        """
-
-        try:
-            self._socket.close()
-        except OSError as e:
-            raise MsgESS.MsgESSException("Failed to close the socket!", e)
-
-    def send_binary_msg(self, binary_data: bytes) -> None:
+    def send_binary_data(self, binary_data: bytes, message_class: int, _data_type: int = _MessageDataType.BINARY) -> None:
         """Send a message with binary data in its body to the socket.
 
         :param binary_data: The data to send.
+        :param message_class: User-defined message class that can be used for multiplexing.
+        :param _data_type: Used internally - DO NOT SET!
         :raises: MsgESS.MsgESSException: If any error is encountered during the sending process.
         """
+
+        if not isinstance(binary_data, bytes):
+            raise MsgESS.MsgESSException("The data sent must be of the 'bytes' type!")
 
         # compress message, if requested
         if self._compress_messages:
@@ -107,12 +106,15 @@ class MsgESS:
         binary_data_length = len(binary_data)
 
         # assemble message:
-        #  message header = magic string (11b), protocol version (4b), raw bytes length (4b), is message compressed? (1b) = 20 bytes in total
-        #  message footer = magic string (9b) = 9 bytes in total
+        #  message header = magic string (11b), protocol version (4b), raw bytes length (4b), user-defined message class (4b),
+        #   is message compressed? (1b), data type (1b) -> 25 bytes in total
+        #  message footer = magic string (9b) -> 9 bytes in total
         message = b"MsgESSbegin"
         message += self.PROTOCOL_VERSION.to_bytes(4, byteorder="big", signed=False)
         message += binary_data_length.to_bytes(4, byteorder="big", signed=False)
+        message += message_class.to_bytes(4, byteorder="big", signed=False)
         message += self._compress_messages.to_bytes(1, byteorder="big", signed=False)
+        message += _data_type.to_bytes(1, byteorder="big", signed=False)
         message += binary_data
         message += b"MsgESSend"
 
@@ -122,15 +124,16 @@ class MsgESS:
         except OSError as e:
             raise MsgESS.MsgESSException("Failed to send the message to the socket!", e)
 
-    def receive_binary_msg(self) -> bytes:
+    def receive_binary_data(self, _data_type: int = _MessageDataType.BINARY) -> Tuple[bytes, int]:
         """Receive a message with binary data in its body from the socket. Blocks until a full message is received.
 
-        :return: The received binary data.
+        :param _data_type: Used internally - DO NOT SET!
+        :return: The received binary data and message class.
         :raises: MsgESS.MsgESSException: If any error is encountered during the receiving process.
         """
 
-        # receive_json_msg, parse and check message header (see self.send_string_msg for header items and their lengths)
-        header = self._receive_n_bytes(20)
+        # receive_json_msg, parse and check message header (see self.send_string for header items and their lengths)
+        header = self._receive_n_bytes_from_socket(25)
         if header[0:11] != b"MsgESSbegin":
             raise MsgESS.MsgESSException("The received message has an invalid header!")
 
@@ -138,10 +141,15 @@ class MsgESS:
             raise MsgESS.MsgESSException("The remote host uses an incompatible protocol version!")
 
         message_length = int.from_bytes(header[15:19], byteorder="big", signed=False)
-        is_message_compressed = bool.from_bytes(header[19:20], byteorder="big", signed=False)
+        message_class = int.from_bytes(header[19:23], byteorder="big", signed=False)
+        is_message_compressed = bool.from_bytes(header[23:24], byteorder="big", signed=False)
+
+        # check the data type
+        if int.from_bytes(header[24:25], byteorder="big", signed=False) != _data_type:
+            raise MsgESS.MsgESSException("The received message has an invalid data type!")
 
         # receive_json_msg and possibly decompress message body
-        message = self._receive_n_bytes(message_length)
+        message = self._receive_n_bytes_from_socket(message_length)
         if is_message_compressed:
             try:
                 message = zlib.decompress(message)
@@ -149,114 +157,123 @@ class MsgESS:
                 raise MsgESS.MsgESSException("Failed to decompress the received message's body!", e)
 
         # receive_json_msg and check message footer
-        footer = self._receive_n_bytes(9)
+        footer = self._receive_n_bytes_from_socket(9)
         if footer != b"MsgESSend":
             raise MsgESS.MsgESSException("The received message has an invalid footer!")
 
-        return message
+        return message, message_class
 
-    def receive_binary_msgs_to_cb(self, callback: Callable[[MsgESS, bytes], CallbackReturnType]) -> None:
-        """
-        Receive a message with binary data in its body from the socket and pass the message to the specified
-        callback function. Blocks until a full message is received. Messages are received until the callback function
-        returns MsgESS.CallbackReturnType.EXIT_CALLBACK_LOOP.
-
-        :param callback: The callback function to call for each received message.
-        :raises: MsgESS.MsgESSException: If any error is encountered during the receiving process.
-        """
-
-        while True:
-            message = self.receive_binary_msg()
-            if callback(self, message) == self.CallbackReturnType.EXIT_CALLBACK_LOOP:
-                break
-
-    def send_string_msg(self, string: str) -> None:
+    def send_string(self, string: str, message_class: int, _data_type: int = _MessageDataType.STRING) -> None:
         """Send a message with an UTF-8 string in its body to the socket.
 
         :param string: The string to send.
+        :param message_class: User-defined message class that can be used for multiplexing.
+        :param _data_type: Used internally - DO NOT SET!
         :raises: MsgESS.MsgESSException: If any error is encountered during the sending process.
         """
+
+        if not isinstance(string, str):
+            raise MsgESS.MsgESSException("The data sent must be of the 'str' type!")
 
         try:
             message = string.encode("utf-8")
         except UnicodeEncodeError as e:
             raise MsgESS.MsgESSException("The sent message's body has an invalid UTF-8 character in it!", e)
 
-        self.send_binary_msg(message)
+        self.send_binary_data(message, message_class, _data_type=_data_type)
 
-    def receive_string_msg(self) -> str:
+    def receive_string(self, _data_type: int = _MessageDataType.STRING) -> Tuple[str, int]:
         """Receive a message with an UTF-8 string in its body from the socket. Blocks until a full message is received.
 
-        :return: The received string.
+        :param _data_type: Used internally - DO NOT SET!
+        :return: The received string and message class.
         :raises: MsgESS.MsgESSException: If any error is encountered during the receiving process.
         """
 
-        message = self.receive_binary_msg()
+        message, message_class = self.receive_binary_data(_data_type=_data_type)
 
         try:
-            return message.decode("utf-8")
+            return message.decode("utf-8"), message_class
         except UnicodeDecodeError as e:
             raise MsgESS.MsgESSException("The received message's body has an invalid UTF-8 character in it!", e)
 
-    def receive_string_msg_to_cb(self, callback: Callable[[MsgESS, str], CallbackReturnType]):
-        """
-        Receive a message with an UTF-8 string in its body from the socket and pass the message to the specified
-        callback function. Blocks until a full message is received. Messages are received until the callback function
-        returns MsgESS.CallbackReturnType.EXIT_CALLBACK_LOOP.
+    def send_json_array(self, json_array: list, message_class: int) -> None:
+        """Send a message with a serialized JSON array in its body to the socket.
 
-        :param callback: The callback function to call for each received message.
-        :raises: MsgESS.MsgESSException: If any error is encountered during the receiving process.
-        """
-
-        while True:
-            message = self.receive_string_msg()
-            if callback(self, message) == self.CallbackReturnType.EXIT_CALLBACK_LOOP:
-                break
-
-    def send_json_msg(self, json_data: JSONType):
-        """Send a message with a serialized JSON in its body to the socket.
-
-        :param json_data: The JSON to serialize and send.
+        :param json_array: The JSON array to serialize and send.
+        :param message_class: User-defined message class that can be used for multiplexing.
         :raises: MsgESS.MsgESSException: If any error is encountered during the sending process.
         """
 
+        if not isinstance(json_array, list):
+            raise MsgESS.MsgESSException("The data sent must be of the 'list' type!")
+
         try:
-            message = json.dumps(json_data)
+            message = json.dumps(json_array)
         except TypeError as e:
-            raise MsgESS.MsgESSException("Failed to serialize the supplied data to JSON!", e)
+            raise MsgESS.MsgESSException("Failed to serialize the supplied list to JSON array!", e)
 
-        self.send_string_msg(message)
+        self.send_string(message, message_class, _data_type=self._MessageDataType.JSON_ARRAY)
 
-    def receive_json_msg(self) -> JSONType:
+    def receive_json_array(self) -> Tuple[list, int]:
         """
-        Receive a message with a serialized JSON in its body from the socket. Blocks until a full message is received.
+        Receive a message with a serialized JSON array in its body from the socket. Blocks until a full message is received.
 
-        :return: The received and deserialized JSON.
+        :return: The received deserialized JSON array and message class.
         :raises: MsgESS.MsgESSException: If any error is encountered during the receiving process.
         """
 
-        message = self.receive_string_msg()
+        message, message_class = self.receive_string(_data_type=self._MessageDataType.JSON_ARRAY)
 
         try:
-            return json.loads(message)
+            deserialized_json = json.loads(message)
         except json.JSONDecodeError as e:
-            raise MsgESS.MsgESSException("Failed to decode the received JSON data!", e)
+            raise MsgESS.MsgESSException("Failed to decode the received JSON array!", e)
 
-    def receive_json_msgs_to_cb(self, callback: Callable[[MsgESS, JSONType], CallbackReturnType]):
-        """Receive a message with a serialized JSON in its body from the socket and pass the message to the
-        specified callback function. Blocks until a full message is received. Messages are received until the callback
-        function returns MsgESS.CallbackReturnType.EXIT_CALLBACK_LOOP.
+        if not isinstance(deserialized_json, list):
+            raise MsgESS.MsgESSException("The received message doesn't contain a JSON array!")
 
-        :param callback: The callback function to call for each received message.
+        return deserialized_json, message_class
+
+    def send_json_object(self, json_object: dict, message_class: int) -> None:
+        """Send a message with a serialized JSON object in its body to the socket.
+
+        :param json_object: The JSON object to serialize and send.
+        :param message_class: User-defined message class that can be used for multiplexing.
+        :raises: MsgESS.MsgESSException: If any error is encountered during the sending process.
+        """
+
+        if not isinstance(json_object, dict):
+            raise MsgESS.MsgESSException("The data sent must be of the 'dict' type!")
+
+        try:
+            message = json.dumps(json_object)
+        except TypeError as e:
+            raise MsgESS.MsgESSException("Failed to serialize the supplied list to JSON array!", e)
+
+        self.send_string(message, message_class, _data_type=self._MessageDataType.JSON_OBJECT)
+
+    def receive_json_object(self) -> Tuple[dict, int]:
+        """
+        Receive a message with a serialized JSON object in its body from the socket. Blocks until a full message is received.
+
+        :return: The received deserialized JSON object and message class.
         :raises: MsgESS.MsgESSException: If any error is encountered during the receiving process.
         """
 
-        while True:
-            message = self.receive_json_msg()
-            if callback(self, message) == self.CallbackReturnType.EXIT_CALLBACK_LOOP:
-                break
+        message, message_class = self.receive_string(_data_type=self._MessageDataType.JSON_OBJECT)
 
-    def _receive_n_bytes(self, n: int) -> bytes:
+        try:
+            deserialized_json = json.loads(message)
+        except json.JSONDecodeError as e:
+            raise MsgESS.MsgESSException("Failed to decode the received JSON object!", e)
+
+        if not isinstance(deserialized_json, dict):
+            raise MsgESS.MsgESSException("The received message doesn't contain a JSON object!")
+
+        return deserialized_json, message_class
+
+    def _receive_n_bytes_from_socket(self, n: int) -> bytes:
         bytes_left = n
         data = bytes()
 

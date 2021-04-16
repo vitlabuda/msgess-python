@@ -33,14 +33,14 @@ MESSAGE_COUNT = 5
 
 
 def exchange_one_message(msgess_: MsgESS, message_number: int, close_connection: bool) -> None:
-    msgess_.send_json_msg({
+    msgess_.send_json_object({
         "current_datetime": time.strftime("%Y-%m-%d %H:%M:%S"),
         "message_number": message_number,
         "close_connection": close_connection
-    })
+    }, 456)
 
-    received_data = msgess_.receive_json_msg()
-    print("Data from server received:", received_data)
+    received_object, message_class = msgess_.receive_json_object()
+    print("Message received (class {}):".format(message_class), received_object)
 
 
 def main():
@@ -56,7 +56,7 @@ def main():
 
         exchange_one_message(msgess_, i + 1, True)
 
-        msgess_.close_connection()
+        msgess_.get_socket().close()
 
 
 if __name__ == '__main__':
