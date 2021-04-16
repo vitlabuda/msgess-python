@@ -25,6 +25,7 @@ from __future__ import annotations
 from typing import Optional, Tuple
 import socket
 import json
+import gzip
 import zlib
 
 
@@ -53,8 +54,8 @@ class MsgESS:
         JSON_ARRAY: int = 3
         JSON_OBJECT: int = 4
 
-    LIBRARY_VERSION: int = 2
-    PROTOCOL_VERSION: int = 2
+    LIBRARY_VERSION: int = 3
+    PROTOCOL_VERSION: int = 3
 
     def __init__(self, socket_: socket.SocketType):
         """Initializes a new MsgESS instance.
@@ -66,7 +67,6 @@ class MsgESS:
 
         self._socket: socket.SocketType = socket_
         self._compress_messages: bool = True
-        self._compression_level: int = -1
 
     def get_socket(self) -> socket.SocketType:
         """Gets the socket passed to __init__, which is used by the instance to send and receive messages.
@@ -76,16 +76,13 @@ class MsgESS:
 
         return self._socket
 
-    def set_message_compression(self, compress_messages: bool, compression_level: Optional[int] = None) -> None:
-        """Turns the message compression on or off. Optionally, it sets the compression level.
+    def set_message_compression(self, compress_messages: bool) -> None:
+        """Turns the message compression on or off.
 
         :param compress_messages: Turn the message compression on or off.
-        :param compression_level: Set the compression level (0-9; -1 = default). None means unchanged.
         """
 
         self._compress_messages = compress_messages
-        if compression_level is not None:
-            self._compression_level = compression_level
 
     def send_binary_data(self, binary_data: bytes, message_class: int, _data_type: int = _MessageDataType.BINARY) -> None:
         """Send a message with binary data in its body to the socket.
@@ -101,7 +98,7 @@ class MsgESS:
 
         # compress message, if requested
         if self._compress_messages:
-            binary_data = zlib.compress(binary_data, level=self._compression_level)
+            binary_data = gzip.compress(binary_data)
 
         binary_data_length = len(binary_data)
 
@@ -110,11 +107,11 @@ class MsgESS:
         #   is message compressed? (1b), data type (1b) -> 25 bytes in total
         #  message footer = magic string (9b) -> 9 bytes in total
         message = b"MsgESSbegin"
-        message += self.PROTOCOL_VERSION.to_bytes(4, byteorder="big", signed=False)
-        message += binary_data_length.to_bytes(4, byteorder="big", signed=False)
-        message += message_class.to_bytes(4, byteorder="big", signed=False)
-        message += self._compress_messages.to_bytes(1, byteorder="big", signed=False)
-        message += _data_type.to_bytes(1, byteorder="big", signed=False)
+        message += self.PROTOCOL_VERSION.to_bytes(4, byteorder="big", signed=True)
+        message += binary_data_length.to_bytes(4, byteorder="big", signed=True)
+        message += message_class.to_bytes(4, byteorder="big", signed=True)
+        message += self._compress_messages.to_bytes(1, byteorder="big", signed=True)
+        message += _data_type.to_bytes(1, byteorder="big", signed=True)
         message += binary_data
         message += b"MsgESSend"
 
@@ -132,34 +129,42 @@ class MsgESS:
         :raises: MsgESS.MsgESSException: If any error is encountered during the receiving process.
         """
 
-        # receive_json_msg, parse and check message header (see self.send_string for header items and their lengths)
+        # receive, parse and check message header (see self.send_binary_data for header items and their lengths)
         header = self._receive_n_bytes_from_socket(25)
         if header[0:11] != b"MsgESSbegin":
-            raise MsgESS.MsgESSException("The received message has an invalid header!")
+            raise MsgESS.MsgESSException("The received message has an invalid magic header string!")
 
-        if int.from_bytes(header[11:15], byteorder="big", signed=False) != self.PROTOCOL_VERSION:
+        if int.from_bytes(header[11:15], byteorder="big", signed=True) != self.PROTOCOL_VERSION:
             raise MsgESS.MsgESSException("The remote host uses an incompatible protocol version!")
 
-        message_length = int.from_bytes(header[15:19], byteorder="big", signed=False)
-        message_class = int.from_bytes(header[19:23], byteorder="big", signed=False)
-        is_message_compressed = bool.from_bytes(header[23:24], byteorder="big", signed=False)
+        message_length = int.from_bytes(header[15:19], byteorder="big", signed=True)
+        if message_length < 0:
+            raise MsgESS.MsgESSException("The received message's length is invalid!")
+
+        message_class = int.from_bytes(header[19:23], byteorder="big", signed=True)
+        if message_class < 0:
+            raise MsgESS.MsgESSException("The received message's class is invalid!")
+
+        is_message_compressed = bool.from_bytes(header[23:24], byteorder="big", signed=True)
+
+        # TODO: check the received ints' negativity
 
         # check the data type
-        if int.from_bytes(header[24:25], byteorder="big", signed=False) != _data_type:
+        if int.from_bytes(header[24:25], byteorder="big", signed=True) != _data_type:
             raise MsgESS.MsgESSException("The received message has an invalid data type!")
 
-        # receive_json_msg and possibly decompress message body
+        # receive and possibly decompress message body
         message = self._receive_n_bytes_from_socket(message_length)
         if is_message_compressed:
             try:
-                message = zlib.decompress(message)
-            except zlib.error as e:
+                message = gzip.decompress(message)
+            except (OSError, EOFError, zlib.error) as e:
                 raise MsgESS.MsgESSException("Failed to decompress the received message's body!", e)
 
-        # receive_json_msg and check message footer
+        # receive and check message footer
         footer = self._receive_n_bytes_from_socket(9)
         if footer != b"MsgESSend":
-            raise MsgESS.MsgESSException("The received message has an invalid footer!")
+            raise MsgESS.MsgESSException("The received message has an invalid magic footer string!")
 
         return message, message_class
 

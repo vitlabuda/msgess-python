@@ -1,0 +1,12 @@
+*** Version 3 ***
+- changed compression from raw zlib to gzip (better interoperability with Java)
+- network protocol refactoring
+- fixed typos in comments
+
+
+*** Version 2 ***
+- code & network protocol refactoring
+
+
+*** Version 1 ***
+- initial release
