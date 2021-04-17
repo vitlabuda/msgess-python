@@ -1,3 +1,8 @@
+*** Version 4 ***
+- added the option to set & verify maximum message size
+- renamed set_message_compression() to set_compress_messages()
+
+
 *** Version 3 ***
 - changed compression from raw zlib to gzip (better interoperability with Java)
 - network protocol refactoring

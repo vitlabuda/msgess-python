@@ -54,7 +54,7 @@ class MsgESS:
         JSON_ARRAY: int = 3
         JSON_OBJECT: int = 4
 
-    LIBRARY_VERSION: int = 3
+    LIBRARY_VERSION: int = 4
     PROTOCOL_VERSION: int = 3
 
     def __init__(self, socket_: socket.SocketType):
@@ -67,6 +67,7 @@ class MsgESS:
 
         self._socket: socket.SocketType = socket_
         self._compress_messages: bool = True
+        self._max_message_size: int = 25000000  # in bytes
 
     def get_socket(self) -> socket.SocketType:
         """Gets the socket passed to __init__, which is used by the instance to send and receive messages.
@@ -76,13 +77,25 @@ class MsgESS:
 
         return self._socket
 
-    def set_message_compression(self, compress_messages: bool) -> None:
+    def set_compress_messages(self, compress_messages: bool) -> None:
         """Turns the message compression on or off.
 
         :param compress_messages: Turn the message compression on or off.
         """
 
         self._compress_messages = compress_messages
+
+    def set_max_message_size(self, max_message_size: int) -> None:
+        """Set the maximum accepted message size while receiving.
+
+        :param max_message_size: The new maximum message size in bytes.
+        :raises: MsgESS.MsgESSException: If the specified maximum message size is negative.
+        """
+
+        if max_message_size < 0:
+            raise MsgESS.MsgESSException("The new maximum message size is invalid!")
+
+        self._max_message_size = max_message_size
 
     def send_binary_data(self, binary_data: bytes, message_class: int, _data_type: int = _MessageDataType.BINARY) -> None:
         """Send a message with binary data in its body to the socket.
@@ -140,6 +153,8 @@ class MsgESS:
         message_length = int.from_bytes(header[15:19], byteorder="big", signed=True)
         if message_length < 0:
             raise MsgESS.MsgESSException("The received message's length is invalid!")
+        if message_length > self._max_message_size:
+            raise MsgESS.MsgESSException("The received message is too big!")
 
         message_class = int.from_bytes(header[19:23], byteorder="big", signed=True)
         if message_class < 0:

@@ -48,7 +48,7 @@ def main():
         sock.connect(("127.0.0.1", 5568))
 
         msgess_ = MsgESS(sock)
-        msgess_.set_message_compression(False)
+        # msgess_.set_compress_messages(False)
 
         for i in range(1, MESSAGE_COUNT):
             exchange_one_message(msgess_, i, False)
