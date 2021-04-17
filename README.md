@@ -1,5 +1,5 @@
 # MsgESS
-The **MsgESS** (Message Exchange over Stream Sockets) [messages] is a **Python 3** (and Java) library and network protocol which allows applications to send and receive different types of data (raw binary data, UTF-8 strings, JSON, ...) in the form of messages reliably over any stream socket (a socket with the SOCK_STREAM type, e.g. TCP or Unix sockets). Each message can be assigned a message class that allows the app using the library to multiplex message channels.
+The **MsgESS** (Message Exchange over Stream Sockets) [messages] is a **Python 3** library and network protocol which allows applications to send and receive different types of data (raw binary data, UTF-8 strings, JSON, ...) in the form of messages reliably over any stream socket (a socket with the SOCK_STREAM type, e.g. TCP or Unix sockets). Each message can be assigned a message class that allows the app using the library to multiplex message channels.
 
 
 ## Requirements

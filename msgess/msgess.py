@@ -70,7 +70,7 @@ class MsgESS:
         self._max_message_size: int = 25000000  # in bytes
 
     def get_socket(self) -> socket.SocketType:
-        """Gets the socket passed to __init__, which is used by the instance to send and receive messages.
+        """Gets the socket passed to __init__.
 
         :return: The socket passed to __init__.
         """
@@ -161,8 +161,6 @@ class MsgESS:
             raise MsgESS.MsgESSException("The received message's class is invalid!")
 
         is_message_compressed = bool.from_bytes(header[23:24], byteorder="big", signed=True)
-
-        # TODO: check the received ints' negativity
 
         # check the data type
         if int.from_bytes(header[24:25], byteorder="big", signed=True) != _data_type:
