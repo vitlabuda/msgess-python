@@ -1,3 +1,7 @@
+*** Version 5 ***
+- added manual garbage collection in places where lots of unnecessary data might persist in the memory
+
+
 *** Version 4 ***
 - added the option to set & verify maximum message size
 - renamed set_message_compression() to set_compress_messages()

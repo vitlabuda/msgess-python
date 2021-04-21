@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 from typing import Optional, Tuple
+import gc
 import socket
 import json
 import gzip
@@ -54,7 +55,7 @@ class MsgESS:
         JSON_ARRAY: int = 3
         JSON_OBJECT: int = 4
 
-    LIBRARY_VERSION: int = 4
+    LIBRARY_VERSION: int = 5
     PROTOCOL_VERSION: int = 3
 
     def __init__(self, socket_: socket.SocketType):
@@ -112,6 +113,7 @@ class MsgESS:
         # compress message, if requested
         if self._compress_messages:
             binary_data = gzip.compress(binary_data)
+            gc.collect()
 
         binary_data_length = len(binary_data)
 
@@ -127,6 +129,9 @@ class MsgESS:
         message += _data_type.to_bytes(1, byteorder="big", signed=True)
         message += binary_data
         message += b"MsgESSend"
+
+        binary_data = None
+        gc.collect()
 
         # send message
         try:
@@ -173,6 +178,7 @@ class MsgESS:
                 message = gzip.decompress(message)
             except (OSError, EOFError, zlib.error) as e:
                 raise MsgESS.MsgESSException("Failed to decompress the received message's body!", e)
+            gc.collect()
 
         # receive and check message footer
         footer = self._receive_n_bytes_from_socket(9)
