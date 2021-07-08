@@ -1,3 +1,8 @@
+*** Version 6 ***
+- added the possibility to pass a stream-socket-like object to the constructor
+- when receiving data from the socket, it's now checked whether the recv() call returned data or not
+
+
 *** Version 5 ***
 - added manual garbage collection in places where lots of unnecessary data might persist in the memory
 

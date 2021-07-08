@@ -22,7 +22,8 @@
 
 
 from __future__ import annotations
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
+import abc
 import gc
 import socket
 import json
@@ -41,11 +42,25 @@ class MsgESS:
     """
 
     class MsgESSException(Exception):
-        """The only exception raised by MsgESS' methods."""
+        """The only exception raised by MsgESS's methods."""
 
         def __init__(self, message: str, original_exception: Optional[Exception] = None):
             super().__init__(message)
             self.original_exception: Optional[Exception] = original_exception
+
+    class StreamSocketLikeObject(metaclass=abc.ABCMeta):
+        """
+        An object implementing the recv() and sendall() method that can be passed to the constructor instead of a
+        socket.socket object.
+        """
+
+        @abc.abstractmethod
+        def recv(self, n: int) -> bytes:
+            raise NotImplementedError("The recv() method must be overridden prior to using it!")
+
+        @abc.abstractmethod
+        def sendall(self, data: bytes) -> None:
+            raise NotImplementedError("The sendall() method must be overridden prior to using it!")
 
     class _MessageDataType:
         """Contains the integer constants used to denote the data type in messages."""
@@ -55,25 +70,23 @@ class MsgESS:
         JSON_ARRAY: int = 3
         JSON_OBJECT: int = 4
 
-    LIBRARY_VERSION: int = 5
+    LIBRARY_VERSION: int = 6
     PROTOCOL_VERSION: int = 3
 
-    def __init__(self, socket_: socket.SocketType):
+    def __init__(self, socket_: Union[socket.socket, StreamSocketLikeObject]):
         """Initializes a new MsgESS instance.
 
-        :param socket_:
-            The socket to receive and send messages through. It can be any object that implements the
-            recv(int) -> bytes, sendall(bytes) and close() methods.
+        :param socket_: The socket or stream-socket-like object to receive and send messages through.
         """
 
-        self._socket: socket.SocketType = socket_
+        self._socket: Union[socket.socket, MsgESS.StreamSocketLikeObject] = socket_
         self._compress_messages: bool = True
         self._max_message_size: int = 25000000  # in bytes
 
-    def get_socket(self) -> socket.SocketType:
-        """Gets the socket passed to __init__.
+    def get_socket(self) -> Union[socket.socket, StreamSocketLikeObject]:
+        """Gets the socket or stream-socket-like object passed to __init__.
 
-        :return: The socket passed to __init__.
+        :return: The socket or socket-like object passed to __init__.
         """
 
         return self._socket
@@ -303,12 +316,15 @@ class MsgESS:
 
         while bytes_left > 0:
             try:
-                recvd_length = self._socket.recv(min(16384, bytes_left))
+                current_data = self._socket.recv(min(16384, bytes_left))
             except OSError as e:
                 raise MsgESS.MsgESSException("Failed to receive data from the socket!", e)
 
-            data += recvd_length
-            bytes_left -= len(recvd_length)
+            if not current_data:
+                raise MsgESS.MsgESSException("The recv() call has succeeded, but no data were received - the connection is probably dead.")
+
+            data += current_data
+            bytes_left -= len(current_data)
 
         if n != len(data):
             raise RuntimeError("The OS has received a different number of bytes than it was requested!")
